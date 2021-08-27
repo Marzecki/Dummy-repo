@@ -326,24 +326,6 @@ def trigger_history_log_data_set_generation(init):
     send_command(init, command, parameters=parameter)
 
 
-def get_logs_info(init) -> dict:
-    primary_info = send_command(init, 'getHistoryLogInfo', PRIMARY_INSTANCE, return_parameters=['dataSelector',
-                                                                                                'intervalSelector',
-                                                                                                'nrOfEntries',
-                                                                                                'nrOfPossibleEntries',
-                                                                                                'dataSize',
-                                                                                                'instanceStatus'])
-
-    secondary_info = send_command(init, 'getHistoryLogInfo', SECONDARY_INSTANCE,
-                                  return_parameters=['dataSelector',
-                                                     'intervalSelector',
-                                                     'nrOfEntries',
-                                                     'nrOfPossibleEntries',
-                                                     'dataSize',
-                                                     'instanceStatus'])
-    return {'primary': primary_info, 'secondary': secondary_info}
-
-
 def generate_new_log(init, ultrasonic_simulation, iteration, instance):
     number_before = int('0x' + reverse_stream(get_logs_info(init)[instance]['nrOfEntries'], False), 16)
     last_entries_before = get_last_entries(init)
@@ -454,12 +436,12 @@ def get_date_and_volume(response_mbus, index):
     return slice_date, slice_volume
 
 
-def preconditions(init, selector, role, set_operation_mode, activate_sitp, max_entries=1000):
+def preconditions(init, selector, role, set_operation_mode, activate_sitp, max_entries='E8 03'):
     # Setting Operation mode
     set_operation_mode(OperationMode(mode=MeterMode.PRODUCTION, operation=MeterOperation.NORMAL))
     activate_sitp(role)
 
-    # enable both history instances
+    # enable history log
     send_command(init, "controlHistoryLog", "01")
 
     # logging interval
@@ -468,37 +450,24 @@ def preconditions(init, selector, role, set_operation_mode, activate_sitp, max_e
     send_command(init, "configureHistoryLogDataset", selector)
 
     send_command(init, "setMaximalAmountOfHistoryLogEntries", max_entries)
-    # send_command(init, "setMaximalAmountOfHistoryLogEntries", SECONDARY_INSTANCE + secondary_limitation)
 
-    # delete all entries in both instances
+    # delete all entries
     send_command(init, 'deleteHistoryLog')
-    # send_command(init, 'deleteHistoryLog', SECONDARY_INSTANCE)
 
     logs_info = get_logs_info(init)
 
-    if logs_info['primary']['dataSelector'] != selector:
+    if logs_info['dataSelector'] != selector:
         raise Exception('dataSelector has not been set correctly')
-    if logs_info['primary']['intervalSelector'] != INTERVAL_SELECTOR:
+    if logs_info['intervalSelector'] != INTERVAL_SELECTOR:
         raise Exception('intervalSelector has not been set correctly')
-    # if logs_info['primary']['nrOfPossibleEntries'] != primary_limitation:
-    #     raise Exception('nrOfPossibleEntries has not been set correctly')
-    if logs_info['primary']['nrOfEntries'] != '00 00':
-        raise Exception('nrOfEntries has not been reset to 0')
-
-    if logs_info['secondary']['dataSelector'] != selector:
-        raise Exception('dataSelector has not been set correctly')
-    if logs_info['secondary']['intervalSelector'] != INTERVAL_SELECTOR:
-        raise Exception('intervalSelector has not been set correctly')
-    # if logs_info['secondary']['nrOfPossibleEntries'] != secondary_limitation:
-    #     raise Exception('nrOfPossibleEntries has not been set correctly')
-    if logs_info['secondary']['nrOfEntries'] != '00 00':
+    if logs_info['nrOfEntries'] != '00 00':
         raise Exception('nrOfEntries has not been reset to 0')
 
     return logs_info
 
 
-def int_to_hex_string(integer: int) -> str:
-    return str(struct.pack(">i", integer).hex()[4:])
+def int_to_hex_string(integer: int, num_bytes: int) -> str:
+    return integer.to_bytes(num_bytes, 'little').hex().upper()
 
 
 def simulate_flow(init: ItepMock, ultrasonic_simulation, direction: str = "forward"):
@@ -522,14 +491,15 @@ def get_logs_info(init) -> dict:
 
     return primary_info
 
+
 def verify_typef_date(date: str) -> bool:
-    date.replace(" ", "")
-    data_tobin = bin(int(date, base=16))[2:]
-    hour = int(data_tobin[12:15], base=2)
-    minute = int(data_tobin[2:7], base=2)
-    month = int(str(data_tobin[24:27]) + str(data_tobin[16:18]), base=2)
-    day = int(data_tobin[19:23], base=2)
-    year = int(data_tobin[28:], base=2)
+    date = date.replace(" ", "")
+    data_tobin = format((int(date, base=16)), '#034b')[2:]
+    hour = int(data_tobin[11:16], base=2)
+    minute = int(data_tobin[2:8], base=2)
+    day = int(data_tobin[19:24], base=2)
+    month = int(data_tobin[27:], base=2)
+    year = int(data_tobin[24:27] + data_tobin[15:19], base=2)
     if not 0 <= hour <= 23:
         return False
     if not 0 <= minute <= 59:
@@ -541,6 +511,16 @@ def verify_typef_date(date: str) -> bool:
     if not 0 <= year <= 99:
         return False
     return True
+
+
+def check_if_element_non_zero(element: str) -> bool:
+    element = element.replace(" ", "")
+    non_zero_vals = list(filter(lambda a: a[1] != "0", enumerate(element[:])))
+    print(non_zero_vals)
+    if not non_zero_vals:
+        return False
+    return True
+
 
 # ***************************************************************************************
 # External functions
@@ -559,9 +539,6 @@ digit after coma).''')
 @pytest.mark.parametrize('mode', [MeterMode.FIELD_FALLBACK, MeterMode.PRODUCTION])
 @pytest.mark.parametrize('role', ['REP', 'LAB', 'TES', 'UTL'])  # ['REP', 'LAB', 'TES', 'UTL']
 @pytest.mark.parametrize('selector', ['06 13'])  # TimeTypeF, SumVol, MedTemp, AmbTemp, ErrState
-# @pytest.mark.parametrize('primary_limitation, secondary_limitation', [(32, 1024),  # (32, 1024)
-#                                                                       (16, 512),  # (16, 512)
-#                                                                       (1, 1)])  # (1, 1)
 def test_history_log_reading_data_and_resolution(init, activate_sitp, set_operation_mode, role, mode, selector,
                                                  ultrasonic_simulation):
     # PRECONDITIONS
@@ -635,42 +612,36 @@ def test_history_log_reading_data_and_resolution(init, activate_sitp, set_operat
 @allure.title('Timestamps')
 @allure.description('''This test checks if there is a possibility to log both dateTimeTypeF and operatingHours in 
 history log on meters supplied externally or by a battery.''')
-# @pytest.mark.parametrize('mode', [MeterMode.FIELD_FALLBACK, MeterMode.PRODUCTION])
-@pytest.mark.parametrize('role', ['REP', 'LAB', 'TES', 'UTL'])
-def test_history_log_timestamps(init, role,
-                                activate_sitp, set_operation_mode):
+def test_history_log_timestamps(init, activate_sitp, set_operation_mode):
     # TODO: switch power supply to battery/external, for now there's no command supplied
     # PRECONDITIONS BLOCK
     set_operation_mode(OperationMode(mode=MeterMode.PRODUCTION, operation=MeterOperation.NORMAL))
     # TEST BLOCK
     # configure and enable history log
-    preconditions(init, HISTORY_LOG_DATA_SELECTOR['dateTimeTypeF'] + HISTORY_LOG_DATA_SELECTOR['operatingHours'],
-                  role, set_operation_mode, activate_sitp)
+    preconditions(init, int_to_hex_string(HISTORY_LOG_DATA_SELECTOR['dateTimeTypeF'] +
+                                          HISTORY_LOG_DATA_SELECTOR['operatingHours'], 2),
+                  'MAN', set_operation_mode, activate_sitp)
     # generate log entry
     send_command(init, 'triggerHistoryLogDatasetGeneration', '')
     # read first log entry and check whether correct values are logged
     first_entry = send_command(init, "readHistoryLog", parameters="00 00 01", return_parameters=["dataSet"])['dataSet']
     # first, check if the number of bytes matches the datasets used
-    log_info = get_logs_info(init)
-    data_size = log_info['dataSize']
-    data_size = data_size.replace(" ", "")
+    data_size = first_entry.replace(" ", "")
     # check if length of dataset correct
     length = int(data_size, base=16)
     # 3 + 4 bytes
-    expected_length = 7
+    expected_length = HistoryLogDataSetSizes['dateTimeTypeF']+HistoryLogDataSetSizes['operatingHours']
     # check if valid date
     date_valid = True if verify_typef_date(first_entry.replace(" ", "")[0, 7]) else False
     allure.attach(f"""
                                     <h2>Test result</h2>
                                     <table style="width:100%">
                                       <tr>
-                                        <th>Role:</th>
                                         <th>Expected dataSet size:</th>
                                         <th>Actual dataSet size:</th>
                                         <th>Stored date a valid date:</th>
                                       </tr>
                                       <tr align="center">
-                                        <td>{role}</td>
                                         <td>{expected_length}</td>
                                         <td>{length}</td>
                                         <td>{date_valid}</td>
@@ -681,12 +652,11 @@ def test_history_log_timestamps(init, role,
                   allure.attachment_type.HTML)
 
     # reset history log
+    set_operation_mode(OperationMode(mode=MeterMode.PRODUCTION, operation=MeterOperation.NORMAL))
     send_command(init, 'deleteHistoryLog', '')
     # back to default mode
-    set_operation_mode(OperationMode(mode=MeterMode.PRODUCTION, operation=MeterOperation.NORMAL))
 
     # reset metrological log to be sure is not full after open/close metrological accesses
-    activate_sitp('MAN')
     send_command_return_response(init, 'controlMetrologicalLog', '02', '')[-1]
     # assertions
     assert date_valid
@@ -706,19 +676,17 @@ log. If the log is full new entries should overwrite oldest entries.''')
 def test_history_log_max_number_of_entries(init, mode, role, ultrasonic_simulation,
                                            activate_sitp, set_operation_mode):
     # PRECONDITION BLOCK
-    preconditions(init, HISTORY_LOG_DATA_SELECTOR['ALL'], role, set_operation_mode, activate_sitp)
+    # handle preconditions
     # check if history log is empty
     # also save log info for later
-    log_info_before = get_logs_info(init)
-    num_entries_pre = log_info_before["nrOfEntries"]
-    if num_entries_pre != '00 00':
-        raise Exception("History log is not empty!")
+    preconditions(init, int_to_hex_string(HISTORY_LOG_DATA_SELECTOR['ALL'], 2), role,
+                                    set_operation_mode, activate_sitp)
     # go to prod or ff mode
     set_operation_mode(OperationMode(mode=mode, operation=MeterOperation.NORMAL))
     # activate role
     activate_sitp(role)
     # set history log capacity to 1096 in hex
-    send_command(init, "setMaximalAmountOfHistoryLogEntries", int_to_hex_string(1096))
+    send_command(init, "setMaximalAmountOfHistoryLogEntries", int_to_hex_string(1096, 2))
     # check if the change was propagated (only UTL or TES)
     log_info_after_change = get_logs_info(init)
     for i in range(0, 1096):
@@ -733,7 +701,7 @@ def test_history_log_max_number_of_entries(init, mode, role, ultrasonic_simulati
     num_log_entries_before_rollout = log_info_before_rollout['nrOfLogEntries']
     # second to last entry
     second_to_last_entry = \
-        send_command(init, "readHistoryLog", parameters=int_to_hex_string(1094) + "01", return_parameters=["dataSet"])[
+        send_command(init, "readHistoryLog", parameters=int_to_hex_string(1094, 2) + "01", return_parameters=["dataSet"])[
             'dataSet']
     # add one more entry
     send_command(init, 'triggerHistoryLogDatasetGeneration', '')
@@ -743,7 +711,7 @@ def test_history_log_max_number_of_entries(init, mode, role, ultrasonic_simulati
     num_log_entries_after_rollout = log_info_after_rollout['nrOfLogEntries']
     # read last entry in history log
     last_entry = \
-        send_command(init, "readHistoryLog", parameters=int_to_hex_string(1095) + "01", return_parameters=["dataSet"])[
+        send_command(init, "readHistoryLog", parameters=int_to_hex_string(1095, 2) + "01", return_parameters=["dataSet"])[
             'dataSet']
 
     allure.attach(f"""
@@ -775,20 +743,13 @@ def test_history_log_max_number_of_entries(init, mode, role, ultrasonic_simulati
     set_operation_mode(OperationMode(mode=MeterMode.PRODUCTION, operation=MeterOperation.NORMAL))
 
     # reset metrological log to be sure is not full after open/close metrological accesses
-    activate_sitp('MAN')
     send_command_return_response(init, 'controlMetrologicalLog', '02', '')[-1]
     # assertions
+    if role == 'UTL' or 'TES':
+        assert log_info_after_change['nrOfPossibleEntries'] == int_to_hex_string(1096,2)
     assert num_log_entries_before_rollout == num_log_entries_after_rollout
     assert instance_status_after_rollout != instance_status_before_rollout
     assert last_entry == second_to_last_entry
-
-
-def check_if_element_non_zero(element: str) -> bool:
-    non_zero_vals = filter(lambda a: a[1] != "0", enumerate(element[:]))
-    if not non_zero_vals:
-        return False
-    return True
-
 
 @pytest.mark.test_id('cd96d7b4-fbe4-49f0-b0a2-c14aa26d1211')
 @pytest.mark.req_ids(['NoReq'])
@@ -813,13 +774,11 @@ def test_history_log_deleting_log_by_different_commands(init, activate_sitp, set
     # simulate flow
     simulate_flow(init, ultrasonic_simulation)
     # common precondition handling
-    preconditions(init, HISTORY_LOG_DATA_SELECTOR['ALL'], role, set_operation_mode, activate_sitp)
+    log_info = preconditions(init, int_to_hex_string(HISTORY_LOG_DATA_SELECTOR['ALL'],2), role, set_operation_mode, activate_sitp)
     # check if history log is empty
     # also save log info for later
-    log_info = get_logs_info(init)
     num_entries_pre = log_info["nrOfEntries"]
-    if num_entries_pre != '00 00':
-        raise Exception("History log is not empty!")
+
 
     # TEST BLOCK
     activate_sitp(role)
@@ -844,7 +803,6 @@ def test_history_log_deleting_log_by_different_commands(init, activate_sitp, set
     # check log entries after execution of command
     first_entry_after = send_command(init, "readHistoryLog", parameters="00 00 01", return_parameters=["dataSet"])[
         'dataSet']
-    # print('NUMBER OF LOG ENTRIES AFTER DELETION: ' + num_entries_pre + '  ' + number_of_entries_before_2)
 
     # check success of calling command
     command_succeeded = not check_if_element_non_zero(first_entry_after)
@@ -877,7 +835,6 @@ def test_history_log_deleting_log_by_different_commands(init, activate_sitp, set
     set_operation_mode(OperationMode(mode=MeterMode.PRODUCTION, operation=MeterOperation.NORMAL))
 
     # reset metrological log to be sure is not full after open/close metrological accesses
-    activate_sitp('MAN')
     send_command_return_response(init, 'controlMetrologicalLog', '02', '')[-1]
 
     # main assertion
@@ -899,13 +856,11 @@ def test_history_log_logging_interval(init, activate_sitp, set_operation_mode, r
                                       interval):
     # PRECONDITION BLOCK
     # common precondition handling
-    preconditions(init, HISTORY_LOG_DATA_SELECTOR['ALL'], role, set_operation_mode, activate_sitp)
     # check if history log is empty
     # also save log info for later
-    log_info = get_logs_info(init)
-    num_entries_pre = log_info["nrOfEntries"]
-    if num_entries_pre != '00 00':
-        raise Exception("History log is not empty!")
+    num_entries_pre = preconditions(init, int_to_hex_string(HISTORY_LOG_DATA_SELECTOR['ALL'], 2), role,
+                                    set_operation_mode, activate_sitp)['nrOfEntries']
+
     # enter production mode
     set_operation_mode(OperationMode(mode=MeterMode.PRODUCTION, operation=MeterOperation.NORMAL))
     # TEST BLOCK
@@ -949,7 +904,6 @@ def test_history_log_logging_interval(init, activate_sitp, set_operation_mode, r
     set_operation_mode(OperationMode(mode=MeterMode.PRODUCTION, operation=MeterOperation.NORMAL))
 
     # reset metrological log to be sure is not full after open/close metrological accesses
-    activate_sitp('MAN')
     send_command_return_response(init, 'controlMetrologicalLog', '02', '')[-1]
     # delete history log
     send_command(init, 'deleteHistoryLog', '')
@@ -971,13 +925,9 @@ def test_history_log_logging_interval(init, activate_sitp, set_operation_mode, r
 def test_history_log_after_reset(init, activate_sitp, set_operation_mode, role, mode,
                                  ultrasonic_simulation):
     # PRECONDITION BLOCK
-    preconditions(init, mode, HISTORY_LOG_DATA_SELECTOR['ALL'], role, set_operation_mode, activate_sitp)
     # check if history log is empty
     # also save log info for later
-    log_info_before = get_logs_info(init)
-    num_entries_pre = log_info_before["nrOfEntries"]
-    if num_entries_pre != '00 00':
-        raise Exception("History log is not empty!")
+    preconditions(init, mode, HISTORY_LOG_DATA_SELECTOR['ALL'], role, set_operation_mode, activate_sitp)
 
     # TEST BLOCK
     # generate 100 logs with flow simulation in between
@@ -1039,7 +989,6 @@ def test_history_log_after_reset(init, activate_sitp, set_operation_mode, role, 
     set_operation_mode(OperationMode(mode=MeterMode.PRODUCTION, operation=MeterOperation.NORMAL))
 
     # reset metrological log to be sure is not full after open/close metrological accesses
-    activate_sitp('MAN')
     send_command_return_response(init, 'controlMetrologicalLog', '02', '')[-1]
 
     # main assertion
@@ -1061,14 +1010,100 @@ def test_history_log_after_reset(init, activate_sitp, set_operation_mode, role, 
 def test_history_log_generating_and_deleting_entries(init, activate_sitp, set_operation_mode, role, mode,
                                                      ultrasonic_simulation):
     # PRECONDITION BLOCK
-    preconditions(init, HISTORY_LOG_DATA_SELECTOR['ALL'], role, set_operation_mode, activate_sitp)
     # check if history log is empty
-    log_info_before = get_logs_info(init)
-    num_entries_pre = log_info_before["nrOfEntries"]
-    if num_entries_pre != '00 00':
-        raise Exception("History log is not empty!")
+    log_info_before = preconditions(init, HISTORY_LOG_DATA_SELECTOR['ALL'], role, set_operation_mode, activate_sitp)
+
     set_operation_mode(OperationMode(mode=mode, operation=MeterOperation.NORMAL))
     # TEST BLOCK
+    # switch to certain roles
+    activate_sitp(role)
+    # simulate flow and trigger dataset generation
+    simulate_flow(init, ultrasonic_simulation)
+    send_command(init, 'triggerHistoryLogDatasetGeneration', '')
+    # read the first entry
+    first_entry = send_command(init, "readHistoryLog", parameters="00 00 01", return_parameters=["dataSet"])['dataSet']
+    # check if the entry is not null
+    if not check_if_element_non_zero(first_entry):
+        raise Exception("The first entry is null!")
+    # clear history log
+    send_command(init, 'deleteHistoryLog', '')
+    # read the first entry
+    first_entry_after = send_command(init, "readHistoryLog", parameters="00 00 01", return_parameters=["dataSet"])[
+        'dataSet']
+
+    # check entry number
+    log_info_after = get_logs_info(init)
+    num_entries_post = log_info_after['nrOfEntries']
+    num_entries_pre = log_info_before["nrOfEntries"]
+
+    allure.attach(f"""
+                                    <h2>Test result</h2>
+                                    <table style="width:100%">
+                                      <tr>
+                                        <th>Mode:</th>
+                                        <th>Role:</th>
+                                        <th>[Before] Number of entries:</th>
+                                        <th>[After] Number of entries:</th>
+                                      </tr>
+                                      <tr align="center">
+                                        <td>{mode}</td>
+                                        <td>{role}</td>
+                                        <td>{num_entries_pre}</td>
+                                        <td>{num_entries_post}</td>
+                                      </tr>
+                                    </table>
+                                    """,
+                  'Test result',
+                  allure.attachment_type.HTML)
+
+    # back to default mode
+    set_operation_mode(OperationMode(mode=MeterMode.PRODUCTION, operation=MeterOperation.NORMAL))
+
+    # reset metrological log to be sure is not full after open/close metrological accesses
+    send_command_return_response(init, 'controlMetrologicalLog', '02', '')[-1]
+
+    # main assertion
+    if mode == "UTL" or mode == 'TES':
+        assert num_entries_post == 0 and not check_if_element_non_zero(first_entry_after)
+    else:
+        assert num_entries_post == num_entries_pre
+
+
+@pytest.mark.test_id('b2c38a0b-7ae3-4e3e-808a-4eb8b1615794')
+@pytest.mark.req_ids(['NoReq'])
+@pytest.mark.creator('Artur Kulgawczuk')
+@pytest.mark.creation_date('03.11.2020')
+@pytest.mark.history_log
+@allure.title('Reading log with different datasets')
+@allure.description(
+    '''This test checks if all selected types of information can be logged by the history log in different sets.''')
+@pytest.mark.parametrize('mode', [MeterMode.FIELD_FALLBACK, MeterMode.PRODUCTION])
+@pytest.mark.parametrize('role', ['REP', 'LAB', 'TES', 'UTL'])
+@pytest.mark.parametrize('selector', [("forwardVolume",), ("backwardVolume",), ("currentFlow",),
+                                      ("forwardVolume", "errorState"), ("currentFlow", "mediumTemp"),
+                                      ("backwardVolume", "maxBackward"),
+                                      ("backwardVolume", "maxBackward", "forwardVolume"),
+                                      ("mediumTemp", "maxForward", "errorState"),
+                                      ("sumVolume", "currentFlow", "maxForward"), ("ALL",)])
+def test_history_log_reading_selected_data(init, activate_sitp, set_operation_mode, role, mode,
+                                           ultrasonic_simulation, selectors):
+    # PRECONDITION BLOCK
+    send_command(init, 'triggerHistoryLogDatasetGeneration', '')
+    send_command(init, 'Set_ldacm_data_volumeDefinitionsAccu1', int_to_hex_string(2115, 10))
+    send_command(init, 'Set_ldacm_data_volumeDefinitionsAccu2', int_to_hex_string(2115, 10))
+    # TODO: generate error, not sure if command final
+    send_command(init, 'ReportErrorState', "00 00 00 04")
+    preconditions(init, HISTORY_LOG_DATA_SELECTOR['ALL'], role, set_operation_mode, activate_sitp)
+    # set op mode to parametrised
+    set_operation_mode(OperationMode(mode=mode, operation=MeterOperation.NORMAL))
+
+    # TEST BLOCK
+    # configure datasets
+    selector = 0
+    for sel in selectors:
+        selector += HISTORY_LOG_DATA_SELECTOR[sel]
+    send_command(init, "configureHistoryLogDataset", selector)
+    send_command(init, 'triggerHistoryLogDatasetGeneration', '')
     # switch to certain roles
     activate_sitp(role)
     # simulate flow and trigger dataset generation
