@@ -146,19 +146,6 @@ HISTORY_LOG_INTERVALS = [
     "0C00",  # hourly
 ]
 
-intervals_dict_time_alarms = {'yearly': '3B 17 BF 2C',  # 31.12.21 23:59
-                              'monthly_middle': '3B 17 AF 2C',  # 15.12.21 23:59
-                              'monthly_end': '3B 17 BF 2C',  # 31.12.21 23:59
-                              'weekly_sunday': '3B 17 B3 2C',  # 19.12.21 23:59
-                              'weekly_monday': '3B 17 B4 2C',  # 20.12.21 23:59
-                              'weekly_tuesday': '3B 17 B5 2C',  # 21.12.21 23:59
-                              'weekly_wednesday': '3B 17 AF 2C',  # 15.12.21 23:59
-                              'weekly_thursday': '3B 17 B7 2C',  # 23.12.21 23:59
-                              'weekly_friday': '3B 17 BF 2C',  # 31.12.21 23:59
-                              'weekly_saturday': '3B 17 B9 2C',  # 25.12.21 23:59
-                              'daily': '3B 17 BF 2C',  # 31.12.21 23:59,
-                              'hourly': '3B 17 BF 2C'}  # 31.12.21 23:59
-
 intervals_dict = {'yearly': ' 01 00',
                   'monthly_middle': ' 02 00',
                   'monthly_end': ' 03 00',
@@ -195,245 +182,6 @@ INTERVAL_SELECTOR = "0C 00"
 # ***************************************************************************************
 # Internal functions
 # ****************************************************************************************
-
-
-def debug_logger(any_str, nr):
-    file = open("Debug_log" + str(nr) + ".txt", "a")
-    file.write(any_str + "\n")
-
-
-def convert_lsb_to_msb(data, amount_of_bytes):
-    data = data[::-1]
-    data = data.split(" ")
-    _data = ""
-    for x in range(0, amount_of_bytes):
-        data[x] = data[x][::-1]
-        _data = _data + data[x]
-    return _data
-
-
-def parse_data_set_from_response_read_history_log(response):
-    _response = response.split(" 1D 80 00 ")
-    data_set = _response[1]
-    data_set = data_set[:-9]
-
-    return data_set
-
-
-def string_to_binary(data, amount_of_bytes):
-    data = reversed(data.split())
-    return int(''.join(data), 16)
-
-
-def binary_to_string_2_byte(data):
-    data = f'{data:04X}'
-    return data[2:] + data[:2]
-
-
-def get_history_log_data(init, instance_select, data):
-    # read from history log: nrOfEntries
-    history_data = send_command(init, 'getHistoryLogInfo', instance_select, return_parameters=[data])[data]
-    return history_data
-
-
-def create_history_log(init, instance_select='both'):
-    # instance: '00' , '01', 'both'
-    if instance_select == 'both':
-        entries = [get_history_log_data(init, '00', 'nrOfEntries'), get_history_log_data(init, '01', 'nrOfEntries')]
-    else:
-        entries = [get_history_log_data(init, instance_select, 'nrOfEntries')]
-
-    if '00 00' in entries:
-        if instance_select == 'both':
-            # primary:
-            send_command(init, 'controlHistoryLog', '01 00')
-            send_command(init, 'configureHistoryLogInterval', '00 0C 00')
-            # secondary:
-            send_command(init, 'controlHistoryLog', '01 01')
-            send_command(init, 'configureHistoryLogInterval', '01 0C 00')
-        else:
-            send_command(init, 'controlHistoryLog', f'01 {instance_select}')
-            send_command(init, 'configureHistoryLogInterval', f'{instance_select} 0C 00')
-
-    type_f_time = '3B 37 BC 22'  # 28.02.2021 23:59
-    send_command(init, 'Set_rtcDateAndTime', type_f_time)
-
-    loop_count = 0
-    while '00 00' in entries:
-        sleep(10)
-        if instance_select == 'both':
-            entries = [get_history_log_data(init, '00', 'nrOfEntries'), get_history_log_data(init, '01', 'nrOfEntries')]
-        else:
-            entries = [get_history_log_data(init, instance_select, 'nrOfEntries')]
-        if loop_count > 18:  # in 3 minutes logs should be created
-            break
-        loop_count += 1
-
-
-def analyse_data_set(data_set, selector, volume, timestamp):
-    selector = int(selector, 16)
-    selector_dict = {}
-
-    chosen_selectors = [element for element in HistoryLogDataSetBitPlaces if selector & element.value]
-    for chosen_selector in chosen_selectors:
-        sec_elements = [sec_element for sec_element in HistoryLogDataSetSizes if sec_element == chosen_selector.name]
-        for sec_element in sec_elements:
-            selector_dict[sec_element] = HistoryLogDataSetSizes[sec_element]
-
-    begin_intern = 0
-    end_intern = begin_intern
-    for element in selector_dict:
-        end_intern += selector_dict[element] * 2
-
-        value = data_set[begin_intern:end_intern]
-
-        if element == HistoryLogDataSetBitPlaces.VOLUME_SUM.name or \
-                element == HistoryLogDataSetBitPlaces.VOLUME_FORWARD.name or \
-                element == HistoryLogDataSetBitPlaces.VOLUME_BACKWARD.name:
-            if value != volume:
-                return '-01'
-
-        elif element == HistoryLogDataSetBitPlaces.DATETIME_TYPE_F.name:
-            if value[2:] != timestamp[2:]:
-                return '-01'
-
-        elif element == HistoryLogDataSetBitPlaces.DATETIME_TYPE_G.name:
-            if value != timestamp[4:]:
-                return '-01'
-
-        begin_intern = end_intern
-    return '00'
-
-
-def configure_data_selector_and_get_data_size(init, instance, data_selector):
-    command = 'configureHistoryLogDataset'
-    parameter = instance + data_selector
-    send_command(init, command, parameters=parameter)
-    command = 'getHistoryLogInfo'
-    parameter = instance
-    response = send_command(init, command, parameters=parameter, return_parameters=['dataSize', 'nrOfPossibleEntries',
-                                                                                    'nrOfEntries'])
-    data_set_size = response['dataSize']
-    nr_of_possible_entries = response['nrOfPossibleEntries']
-    nr_of_entries = response['nrOfEntries']
-
-    return data_set_size, nr_of_possible_entries, nr_of_entries
-
-
-def trigger_history_log_data_set_generation(init):
-    command = 'triggerHistoryLogDatasetGeneration'
-    parameter = ''
-    send_command(init, command, parameters=parameter)
-
-
-def generate_new_log(init, ultrasonic_simulation, iteration, instance):
-    number_before = int('0x' + reverse_stream(get_logs_info(init)[instance]['nrOfEntries'], False), 16)
-    last_entries_before = get_last_entries(init)
-
-    if iteration < 5:
-        # simulate some flow
-        ultrasonic_simulation(simulation_mode=UltrasonicSimulationMode.NORMAL, phase_shift_diff=550 * 1024,
-                              medium_temperature=270, resonator_calibration=False, time_difference_1us=4000,
-                              sonic_speed_correction=19665)
-        sleep(5)
-        disable_ultrasonic_simulation(init)
-
-    # add new entry
-    send_command(init, 'triggerHistoryLogDatasetGeneration', '')
-
-    number_after = int('0x' + reverse_stream(get_logs_info(init)[instance]['nrOfEntries'], False), 16)
-    last_entries_after = get_last_entries(init)
-
-    return number_before, last_entries_before, number_after, last_entries_after
-
-
-def get_last_entries(init):
-    # get data sets
-    data_set_1022 = send_command(init, "readHistoryLog", SECONDARY_INSTANCE + INDEX_1022 + "01",
-                                 return_parameters=['dataSet'])['dataSet']
-    data_set_1023 = send_command(init, "readHistoryLog", SECONDARY_INSTANCE + INDEX_1023 + "01",
-                                 return_parameters=['dataSet'])['dataSet']
-    data_set_30 = send_command(init, "readHistoryLog", PRIMARY_INSTANCE + INDEX_30 + "01",
-                               return_parameters=['dataSet'])['dataSet']
-    data_set_31 = send_command(init, "readHistoryLog", PRIMARY_INSTANCE + INDEX_31 + "01",
-                               return_parameters=['dataSet'])['dataSet']
-    return {'1022': data_set_1022, '1023': data_set_1023, '30': data_set_30, '31': data_set_31}
-
-
-def create_new_log_by_time(init):
-    send_command(init, 'Set_rtcDateAndTime', NEXT_ENTRY_TIME)
-    sleep(120)
-
-
-def generate_log_get_statuses(init, file, ultrasonic_simulation, instance):
-    # get status before
-    status_before = get_logs_info(init)[instance]['instanceStatus']
-    file.write(f'{instance} status_before: {status_before}\n')
-
-    # generate the log that will overfill the page
-    generate_new_log(init, ultrasonic_simulation, 1, instance)
-
-    # get status after
-    status_after = get_logs_info(init)[instance]['instanceStatus']
-    file.write(f'{instance} status_after: {status_after}\n')
-
-    return status_before, status_after
-
-
-def generate_entries_with_different_time_stamp(init, amount_of_entries_to_generate):
-    for entry_ctr in range(amount_of_entries_to_generate):
-        trigger_history_log_data_set_generation(init)
-
-        # generate next time
-        new_time = entry_ctr + 1
-        string_time = str(new_time)
-        while len(string_time) < 8:
-            string_time = "0" + string_time
-
-        send_command(init, 'Set_rtcDateAndTime', string_time)
-
-        # prevent software watchdog
-        if (entry_ctr % 90) == 0:
-            close_irda_communication_window()
-
-    close_irda_communication_window()
-    return 0
-
-
-def get_time_type_f(data_set):
-    return data_set[4:12]
-
-
-def generate_new_volume(entry_ctr):
-    number_as_string = str(entry_ctr)
-    last_number = number_as_string[-1]
-    new_byte = f'{last_number}{last_number}'
-    new_string = ''
-    for byte_ctr in range(10):
-        new_string = new_string + new_byte + ' '
-    return new_string
-
-
-def get_date_and_volume(response_mbus, index):
-    slice_date = ''
-    slice_volume = ''
-    if index == 0:  # last record
-        place_date = response_mbus.find("84 04 6D") + 8
-        place_volume = place_date + 20
-        slice_date = response_mbus[place_date + 1:  place_date + 12]
-        slice_volume = response_mbus[place_volume + 1:  place_volume + 12]
-    if index == 1:  # second to the last record
-        place_date = response_mbus.find("C4 04 6D") + 8
-        place_volume = place_date + 20
-        slice_date = response_mbus[place_date + 1:  place_date + 12]
-        slice_volume = response_mbus[place_volume + 1:  place_volume + 12]
-    if index == 2:  # third to the last record
-        place_date = response_mbus.find("84 05 6D") + 8
-        place_volume = place_date + 20
-        slice_date = response_mbus[place_date + 1:  place_date + 12]
-        slice_volume = response_mbus[place_volume + 1:  place_volume + 12]
-
-    return slice_date, slice_volume
 
 
 def preconditions(init, selector, role, set_operation_mode, activate_sitp, max_entries='E8 03'):
@@ -477,8 +225,6 @@ def simulate_flow(init: ItepMock, ultrasonic_simulation, direction: str = "forwa
                           sonic_speed_correction=19665)
     sleep(5)
     disable_ultrasonic_simulation(init)
-    # add new entry
-    send_command(init, 'triggerHistoryLogDatasetGeneration', '')
 
 
 def get_logs_info(init) -> dict:
@@ -526,7 +272,6 @@ def check_if_element_non_zero(element: str) -> bool:
 # External functions
 # ****************************************************************************************
 
-### NIE PATRZ NA TO TO TEN SĄŻNY PIERWSZY TEST JA GO NA KONIEC ROBIE XD
 @pytest.mark.history_log
 @pytest.mark.test_id('e1fc808c-f723-4116-944c-aaad915150c1')
 @pytest.mark.req_ids(['F423', 'F424', 'F425', 'F426', 'F427', 'F428', 'F429'])
@@ -541,67 +286,100 @@ digit after coma).''')
 @pytest.mark.parametrize('selector', ['06 13'])  # TimeTypeF, SumVol, MedTemp, AmbTemp, ErrState
 def test_history_log_reading_data_and_resolution(init, activate_sitp, set_operation_mode, role, mode, selector,
                                                  ultrasonic_simulation):
-    # PRECONDITIONS
-    # Generate forward volume
-    ultrasonic_simulation(simulation_mode=UltrasonicSimulationMode.NORMAL, phase_shift_diff=550 * 1024,
-                          medium_temperature=270, resonator_calibration=False, time_difference_1us=4000,
-                          sonic_speed_correction=19665)
-    sleep(5)
-    disable_ultrasonic_simulation(init)
-    # Generate backward volume
-    # ?????
-    # trigger error
-    # ?????
+    # PRECONDITION BLOCK
+    send_command(init, 'triggerHistoryLogDatasetGeneration', '')
+    send_command(init, 'Set_ldacm_data_volumeDefinitionsAccu1', int_to_hex_string(21152115, 10))
+    send_command(init, 'Set_ldacm_data_volumeDefinitionsAccu2', int_to_hex_string(2115, 10))
+    # TODO: generate error, not sure if command final
+    send_command(init, 'ReportErrorState', "00 00 00 04")
+    preconditions(init, int_to_hex_string(HISTORY_LOG_DATA_SELECTOR['forwardVolume']
+                                          + HISTORY_LOG_DATA_SELECTOR['backwardVolume']
+                                          + HISTORY_LOG_DATA_SELECTOR['mediumTemperature']
+                                          + HISTORY_LOG_DATA_SELECTOR['errorState']
+                                          + HISTORY_LOG_DATA_SELECTOR['maxForwardFlow']
+                                          + HISTORY_LOG_DATA_SELECTOR['currentFlow'], 2),
+                  role, set_operation_mode, activate_sitp)
+    # set op mode to parametrised
+    set_operation_mode(OperationMode(mode=mode, operation=MeterOperation.NORMAL))
+    # TEST BLOCK
+    # read forward volume from accu
+    forward_volume = send_command(init, 'Get_ldacm_data_volumeDefinitionsAccu1',
+                                  return_parameters=["ldacm_data_volumeDefinitionsAccu1"])[
+        "ldacm_data_volumeDefinitionsAccu1"]
+    # read backward volume from accu
+    back_volume = send_command(init, 'Get_ldacm_data_volumeDefinitionsAccu2',
+                               return_parameters=["ldacm_data_volumeDefinitionsAccu2"])[
+        "ldacm_data_volumeDefinitionsAccu2"]
+    # read current medium temperature
+    medium_temp = send_command(init, 'TestTemperatureMeasurement',
+                               return_parameters=["ntc temperature"])["ntc temperature"]
+    # read error state
+    error_state = send_command(init, 'getErrorState',
+                               return_parameters=["pendingErrors"])["pendingErrors"]
 
-    # Apply common preconditions before test running
-    logs_info = preconditions(init, mode, selector, role, set_operation_mode, activate_sitp)
-
-    # TEST
-    # Step 1 Read forward volume from accu
-
-    # Step 2 Read backward volume from accu
-
-    for iterator in range(secondary_limitation + 1):
+    # read maximum forward flowrate
+    # TODO: no command supplied yet
+    # read current flowrate
+    current_flowrate = send_command(init, 'Get_ldacm_data_selfDisclosure_flowRateQ3',
+                                    return_parameters=["ldacm_data_selfDisclosure_flowRateQ3"])[
+        "ldacm_data_selfDisclosure_flowRateQ3"]
+    for i in range(0, 30):
         send_command(init, 'triggerHistoryLogDatasetGeneration', '')
 
-    # Step 2 get saved number of entries
-    entries_in_primary = int('0x' + reverse_stream(get_logs_info(init)['primary']['nrOfEntries'], False), 16)
-    entries_in_secondary = int('0x' + reverse_stream(get_logs_info(init)['secondary']['nrOfEntries'], False), 16)
+    first_entry = send_command(init, "readHistoryLog", parameters="00 00 01", return_parameters=["dataSet"])[
+        'dataSet'].replace(" ", "")
 
-    # Allure report
+    # extract values from first entry
+    hl_forward_volume = first_entry[:8]
+    hl_back_volume = first_entry[8:16]
+    hl_medium_temp = first_entry[16:20]
+    hl_error_state = first_entry[20:28]
+    # TODO: compare max flow, no command yet
+
     allure.attach(f"""
-                                    <h2>Test result</h2>
-                                    <table style="width:100%">
-                                      <tr>
-                                        <th>Mode</th>
-                                        <th>Role</th>
-                                        <th>Primary limitation</th>
-                                        <th>Secondary limitation</th>
-                                        <th>Primary limitation set</th>
-                                        <th>Secondary limitation set</th>
-                                        <th>Generated number of Primary logs</th>
-                                        <th>Generated number of secondary log</th>
-                                      </tr>
-                                      <tr align="center">
-                                        <td>{mode}</td>
-                                        <td>{role}</td>
-                                        <td>{primary_limitation}</td>
-                                        <td>{secondary_limitation}</td>
-                                        <td>{logs_info['primary']['nrOfPossibleEntries']}</td>
-                                        <td>{logs_info['secondary']['nrOfPossibleEntries']}</td>
-                                        <td>{entries_in_primary}</td>
-                                        <td>{entries_in_secondary}</td>
-                                      </tr>
-                                    </table>
-                                    """,
+                                        <h2>Test result</h2>
+                                        <table style="width:100%">
+                                          <tr>
+                                            <th>Mode:</th>
+                                            <th>[Accu]: Forward volume</th>
+                                            <th>[HistoryLog]: Forward volume</th>
+                                            <th>[Accu]: Backward volume</th>
+                                            <th>[HistoryLog]: Backward volume</th>
+                                            <th>[Accu]: Medium temp </th>
+                                            <th>[HistoryLog]: Medium temp</th>
+                                            <th>[Accu]: Error state</th>
+                                            <th>[HistoryLog]: Error state</th>
+                                          </tr>
+                                          <tr align="center">
+                                            <td>{mode}</td>
+                                            <td>{role}</td>
+                                            <td>{forward_volume}</td>
+                                            <td>{hl_forward_volume}</td>
+                                            <td>{back_volume}</td>
+                                            <td>{hl_back_volume}</td>
+                                            <td>{medium_temp}</td>
+                                            <td>{hl_medium_temp}</td>
+                                            <td>{error_state}</td>
+                                            <td>{hl_error_state}</td>
+                                          </tr>
+                                        </table>
+                                        """,
                   'Test result',
                   allure.attachment_type.HTML)
 
-    # Expected results:
-    assert logs_info['primary']['nrOfPossibleEntries'] == primary_limitation_lsb
-    assert logs_info['secondary']['nrOfPossibleEntries'] == secondary_limitation_lsb
-    assert entries_in_primary == primary_limitation
-    assert entries_in_secondary == secondary_limitation
+    # back to default mode
+    set_operation_mode(OperationMode(mode=MeterMode.PRODUCTION, operation=MeterOperation.NORMAL))
+
+    # reset metrological log to be sure is not full after open/close metrological accesses
+    send_command(init, 'controlMetrologicalLog', parameters='02')
+
+    # main assertion
+    assert forward_volume == hl_forward_volume
+    assert back_volume == hl_back_volume
+    assert medium_temp == hl_medium_temp
+    assert error_state == hl_error_state
+    # TODO: compare max flow, no command yet
+
 
 
 @pytest.mark.test_id('2581b63d-aaac-4e8f-9c06-7adf78e8a649')
@@ -627,10 +405,8 @@ def test_history_log_timestamps(init, activate_sitp, set_operation_mode):
     first_entry = send_command(init, "readHistoryLog", parameters="00 00 01", return_parameters=["dataSet"])['dataSet']
     # first, check if the number of bytes matches the datasets used
     data_size = first_entry.replace(" ", "")
-    # check if length of dataset correct
-    length = int(data_size, base=16)
-    # 3 + 4 bytes
-    expected_length = HistoryLogDataSetSizes['dateTimeTypeF']+HistoryLogDataSetSizes['operatingHours']
+    # get expected length in lsb to compare with data_size
+    expected_length = int_to_hex_string(HistoryLogDataSetSizes['dateTimeTypeF'] + HistoryLogDataSetSizes['operatingHours'], 1)
     # check if valid date
     date_valid = True if verify_typef_date(first_entry.replace(" ", "")[0, 7]) else False
     allure.attach(f"""
@@ -643,7 +419,7 @@ def test_history_log_timestamps(init, activate_sitp, set_operation_mode):
                                       </tr>
                                       <tr align="center">
                                         <td>{expected_length}</td>
-                                        <td>{length}</td>
+                                        <td>{data_size}</td>
                                         <td>{date_valid}</td>
                                       </tr>
                                     </table>
@@ -657,10 +433,10 @@ def test_history_log_timestamps(init, activate_sitp, set_operation_mode):
     # back to default mode
 
     # reset metrological log to be sure is not full after open/close metrological accesses
-    send_command_return_response(init, 'controlMetrologicalLog', '02', '')[-1]
+    send_command(init, 'controlMetrologicalLog', parameters='02')
     # assertions
     assert date_valid
-    assert expected_length == length
+    assert expected_length == data_size
 
 
 @pytest.mark.test_id('ab8fc71c-a9c2-4f3f-a46b-ac6def670d66')
@@ -680,7 +456,7 @@ def test_history_log_max_number_of_entries(init, mode, role, ultrasonic_simulati
     # check if history log is empty
     # also save log info for later
     preconditions(init, int_to_hex_string(HISTORY_LOG_DATA_SELECTOR['ALL'], 2), role,
-                                    set_operation_mode, activate_sitp)
+                  set_operation_mode, activate_sitp)
     # go to prod or ff mode
     set_operation_mode(OperationMode(mode=mode, operation=MeterOperation.NORMAL))
     # activate role
@@ -701,7 +477,8 @@ def test_history_log_max_number_of_entries(init, mode, role, ultrasonic_simulati
     num_log_entries_before_rollout = log_info_before_rollout['nrOfLogEntries']
     # second to last entry
     second_to_last_entry = \
-        send_command(init, "readHistoryLog", parameters=int_to_hex_string(1094, 2) + "01", return_parameters=["dataSet"])[
+        send_command(init, "readHistoryLog", parameters=int_to_hex_string(1094, 2) + "01",
+                     return_parameters=["dataSet"])[
             'dataSet']
     # add one more entry
     send_command(init, 'triggerHistoryLogDatasetGeneration', '')
@@ -711,7 +488,8 @@ def test_history_log_max_number_of_entries(init, mode, role, ultrasonic_simulati
     num_log_entries_after_rollout = log_info_after_rollout['nrOfLogEntries']
     # read last entry in history log
     last_entry = \
-        send_command(init, "readHistoryLog", parameters=int_to_hex_string(1095, 2) + "01", return_parameters=["dataSet"])[
+        send_command(init, "readHistoryLog", parameters=int_to_hex_string(1095, 2) + "01",
+                     return_parameters=["dataSet"])[
             'dataSet']
 
     allure.attach(f"""
@@ -743,13 +521,14 @@ def test_history_log_max_number_of_entries(init, mode, role, ultrasonic_simulati
     set_operation_mode(OperationMode(mode=MeterMode.PRODUCTION, operation=MeterOperation.NORMAL))
 
     # reset metrological log to be sure is not full after open/close metrological accesses
-    send_command_return_response(init, 'controlMetrologicalLog', '02', '')[-1]
+    send_command(init, 'controlMetrologicalLog', parameters='02')
     # assertions
     if role == 'UTL' or 'TES':
-        assert log_info_after_change['nrOfPossibleEntries'] == int_to_hex_string(1096,2)
+        assert log_info_after_change['nrOfPossibleEntries'] == int_to_hex_string(1096, 2)
     assert num_log_entries_before_rollout == num_log_entries_after_rollout
     assert instance_status_after_rollout != instance_status_before_rollout
     assert last_entry == second_to_last_entry
+
 
 @pytest.mark.test_id('cd96d7b4-fbe4-49f0-b0a2-c14aa26d1211')
 @pytest.mark.req_ids(['NoReq'])
@@ -774,11 +553,11 @@ def test_history_log_deleting_log_by_different_commands(init, activate_sitp, set
     # simulate flow
     simulate_flow(init, ultrasonic_simulation)
     # common precondition handling
-    log_info = preconditions(init, int_to_hex_string(HISTORY_LOG_DATA_SELECTOR['ALL'],2), role, set_operation_mode, activate_sitp)
+    log_info = preconditions(init, int_to_hex_string(HISTORY_LOG_DATA_SELECTOR['ALL'], 2), role, set_operation_mode,
+                             activate_sitp)
     # check if history log is empty
     # also save log info for later
     num_entries_pre = log_info["nrOfEntries"]
-
 
     # TEST BLOCK
     activate_sitp(role)
@@ -835,9 +614,11 @@ def test_history_log_deleting_log_by_different_commands(init, activate_sitp, set
     set_operation_mode(OperationMode(mode=MeterMode.PRODUCTION, operation=MeterOperation.NORMAL))
 
     # reset metrological log to be sure is not full after open/close metrological accesses
-    send_command_return_response(init, 'controlMetrologicalLog', '02', '')[-1]
+
+    send_command(init, 'controlMetrologicalLog', parameters='02')
 
     # main assertion
+    assert num_entries_post == '00 00'
     assert command_succeeded
 
 
@@ -904,7 +685,7 @@ def test_history_log_logging_interval(init, activate_sitp, set_operation_mode, r
     set_operation_mode(OperationMode(mode=MeterMode.PRODUCTION, operation=MeterOperation.NORMAL))
 
     # reset metrological log to be sure is not full after open/close metrological accesses
-    send_command_return_response(init, 'controlMetrologicalLog', '02', '')[-1]
+    send_command(init, 'controlMetrologicalLog', parameters='02')
     # delete history log
     send_command(init, 'deleteHistoryLog', '')
 
@@ -927,7 +708,7 @@ def test_history_log_after_reset(init, activate_sitp, set_operation_mode, role, 
     # PRECONDITION BLOCK
     # check if history log is empty
     # also save log info for later
-    preconditions(init, mode, HISTORY_LOG_DATA_SELECTOR['ALL'], role, set_operation_mode, activate_sitp)
+    preconditions(init, mode, int_to_hex_string(HISTORY_LOG_DATA_SELECTOR['ALL'], 2), role, set_operation_mode, activate_sitp)
 
     # TEST BLOCK
     # generate 100 logs with flow simulation in between
@@ -950,7 +731,7 @@ def test_history_log_after_reset(init, activate_sitp, set_operation_mode, role, 
     entries_after_reset = []
     for i in reversed(range(0, 100)):
         entries_after_reset.append(
-            send_command(init, "readHistoryLog", parameters=int_to_hex_string(i) + "01", return_parameters=["dataSet"])[
+            send_command(init, "readHistoryLog", parameters=int_to_hex_string(i, 2) + "01", return_parameters=["dataSet"])[
                 'dataSet'])
     # check entry number
     log_info_after = get_logs_info(init)
@@ -989,7 +770,7 @@ def test_history_log_after_reset(init, activate_sitp, set_operation_mode, role, 
     set_operation_mode(OperationMode(mode=MeterMode.PRODUCTION, operation=MeterOperation.NORMAL))
 
     # reset metrological log to be sure is not full after open/close metrological accesses
-    send_command_return_response(init, 'controlMetrologicalLog', '02', '')[-1]
+    send_command(init, 'controlMetrologicalLog', parameters='02')
 
     # main assertion
     assert num_entries_post == num_entries_pre
@@ -1011,7 +792,7 @@ def test_history_log_generating_and_deleting_entries(init, activate_sitp, set_op
                                                      ultrasonic_simulation):
     # PRECONDITION BLOCK
     # check if history log is empty
-    log_info_before = preconditions(init, HISTORY_LOG_DATA_SELECTOR['ALL'], role, set_operation_mode, activate_sitp)
+    log_info_before = preconditions(init, int_to_hex_string(HISTORY_LOG_DATA_SELECTOR['ALL'], 2), role, set_operation_mode, activate_sitp)
 
     set_operation_mode(OperationMode(mode=mode, operation=MeterOperation.NORMAL))
     # TEST BLOCK
@@ -1060,7 +841,7 @@ def test_history_log_generating_and_deleting_entries(init, activate_sitp, set_op
     set_operation_mode(OperationMode(mode=MeterMode.PRODUCTION, operation=MeterOperation.NORMAL))
 
     # reset metrological log to be sure is not full after open/close metrological accesses
-    send_command_return_response(init, 'controlMetrologicalLog', '02', '')[-1]
+    send_command(init, 'controlMetrologicalLog', parameters='02')
 
     # main assertion
     if mode == "UTL" or mode == 'TES':
@@ -1079,21 +860,21 @@ def test_history_log_generating_and_deleting_entries(init, activate_sitp, set_op
     '''This test checks if all selected types of information can be logged by the history log in different sets.''')
 @pytest.mark.parametrize('mode', [MeterMode.FIELD_FALLBACK, MeterMode.PRODUCTION])
 @pytest.mark.parametrize('role', ['REP', 'LAB', 'TES', 'UTL'])
-@pytest.mark.parametrize('selector', [("forwardVolume",), ("backwardVolume",), ("currentFlow",),
-                                      ("forwardVolume", "errorState"), ("currentFlow", "mediumTemp"),
-                                      ("backwardVolume", "maxBackward"),
-                                      ("backwardVolume", "maxBackward", "forwardVolume"),
-                                      ("mediumTemp", "maxForward", "errorState"),
-                                      ("sumVolume", "currentFlow", "maxForward"), ("ALL",)])
+@pytest.mark.parametrize('selectors', [("forwardVolume",), ("backwardVolume",), ("currentFlow",),
+                                       ("forwardVolume", "errorState"), ("currentFlow", "mediumTemp"),
+                                       ("backwardVolume", "maxBackward"),
+                                       ("backwardVolume", "maxBackward", "forwardVolume"),
+                                       ("mediumTemp", "maxForward", "errorState"),
+                                       ("sumVolume", "currentFlow", "maxForward"), ("ALL",)])
 def test_history_log_reading_selected_data(init, activate_sitp, set_operation_mode, role, mode,
-                                           ultrasonic_simulation, selectors):
+                                           selectors):
     # PRECONDITION BLOCK
     send_command(init, 'triggerHistoryLogDatasetGeneration', '')
-    send_command(init, 'Set_ldacm_data_volumeDefinitionsAccu1', int_to_hex_string(2115, 10))
+    send_command(init, 'Set_ldacm_data_volumeDefinitionsAccu1', int_to_hex_string(21152115, 10))
     send_command(init, 'Set_ldacm_data_volumeDefinitionsAccu2', int_to_hex_string(2115, 10))
     # TODO: generate error, not sure if command final
     send_command(init, 'ReportErrorState', "00 00 00 04")
-    preconditions(init, HISTORY_LOG_DATA_SELECTOR['ALL'], role, set_operation_mode, activate_sitp)
+    preconditions(init, int_to_hex_string(HISTORY_LOG_DATA_SELECTOR['ALL'], 2), role, set_operation_mode, activate_sitp)
     # set op mode to parametrised
     set_operation_mode(OperationMode(mode=mode, operation=MeterOperation.NORMAL))
 
@@ -1102,28 +883,18 @@ def test_history_log_reading_selected_data(init, activate_sitp, set_operation_mo
     selector = 0
     for sel in selectors:
         selector += HISTORY_LOG_DATA_SELECTOR[sel]
-    send_command(init, "configureHistoryLogDataset", selector)
+    send_command(init, "configureHistoryLogDataset", int_to_hex_string(selector, 2))
     send_command(init, 'triggerHistoryLogDatasetGeneration', '')
     # switch to certain roles
     activate_sitp(role)
-    # simulate flow and trigger dataset generation
-    simulate_flow(init, ultrasonic_simulation)
-    send_command(init, 'triggerHistoryLogDatasetGeneration', '')
     # read the first entry
-    first_entry = send_command(init, "readHistoryLog", parameters="00 00 01", return_parameters=["dataSet"])['dataSet']
-    # check if the entry is not null
-    if not check_if_element_non_zero(first_entry):
-        raise Exception("The first entry is null!")
-    # clear history log
-    send_command(init, 'deleteHistoryLog', '')
-    # read the first entry
-    first_entry_after = send_command(init, "readHistoryLog", parameters="00 00 01", return_parameters=["dataSet"])[
-        'dataSet']
+    first_entry = send_command(init, "readHistoryLog", parameters="00 00 01", return_parameters=["dataSet"])['dataSet']. \
+        replace(" ", "")
+    sel_data_size = 0
+    for sel in selectors:
+        sel_data_size += HistoryLogDataSetSizes[sel]
 
-    # check entry number
-    log_info_after = get_logs_info(init)
-    num_entries_post = log_info_after['nrOfEntries']
-    num_entries_pre = log_info_before["nrOfEntries"]
+    actual_entry_length = len(first_entry)
 
     allure.attach(f"""
                                     <h2>Test result</h2>
@@ -1131,14 +902,16 @@ def test_history_log_reading_selected_data(init, activate_sitp, set_operation_mo
                                       <tr>
                                         <th>Mode:</th>
                                         <th>Role:</th>
-                                        <th>[Before] Number of entries:</th>
-                                        <th>[After] Number of entries:</th>
+                                        <th>Selectors:</th>
+                                        <th>Expected data size:</th>
+                                        <th>Actual data size:</th>
                                       </tr>
                                       <tr align="center">
                                         <td>{mode}</td>
                                         <td>{role}</td>
-                                        <td>{num_entries_pre}</td>
-                                        <td>{num_entries_post}</td>
+                                        <td>{selectors}</td>
+                                        <td>{sel_data_size}</td>
+                                        <td>{actual_entry_length}</td>
                                       </tr>
                                     </table>
                                     """,
@@ -1149,11 +922,7 @@ def test_history_log_reading_selected_data(init, activate_sitp, set_operation_mo
     set_operation_mode(OperationMode(mode=MeterMode.PRODUCTION, operation=MeterOperation.NORMAL))
 
     # reset metrological log to be sure is not full after open/close metrological accesses
-    activate_sitp('MAN')
-    send_command_return_response(init, 'controlMetrologicalLog', '02', '')[-1]
+    send_command(init, 'controlMetrologicalLog', parameters='02')
 
     # main assertion
-    if mode == "UTL" or mode == 'TES':
-        assert num_entries_post == 0 and not check_if_element_non_zero(first_entry_after)
-    else:
-        assert num_entries_post == num_entries_pre
+    assert actual_entry_length == sel_data_size
